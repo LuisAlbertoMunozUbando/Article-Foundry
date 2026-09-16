@@ -17,7 +17,7 @@ KEY=os.getenv('ARTICLE_FOUNDRY_LLM_API_KEY','local')
 MODEL=os.getenv('ARTICLE_FOUNDRY_LLM_MODEL','')
 DB.parent.mkdir(parents=True,exist_ok=True); ART.mkdir(parents=True,exist_ok=True)
 
-app=FastAPI(title='Article Foundry',version='0.1.0')
+app=FastAPI(title='Article Foundry',version='0.1.1')
 
 def conn():
  c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
@@ -75,6 +75,15 @@ async def llm_status():
    r=await h.get(f'{LLM}/models',headers={'Authorization':f'Bearer {KEY}'}); r.raise_for_status()
    return {'ok':True,'base_url':LLM,'models':[x['id'] for x in r.json().get('data',[])]}
  except Exception as e:return {'ok':False,'base_url':LLM,'error':str(e)}
+
+@app.get('/api/projects')
+def list_projects():
+ with conn() as c:
+  rows=c.execute('''SELECT p.id,p.title,p.author,p.created,COUNT(f.id) AS fragment_count
+                    FROM projects p LEFT JOIN fragments f ON f.project_id=p.id
+                    GROUP BY p.id,p.title,p.author,p.created
+                    ORDER BY p.created DESC''').fetchall()
+ return [dict(r) for r in rows]
 
 @app.post('/api/projects')
 def create_project(p:ProjectIn):

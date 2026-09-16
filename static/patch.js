@@ -7,6 +7,25 @@
   const NON_LATIN = new Set(['ja','zh','he','ar','ru','ko']);
   let selectedOutputLang = localStorage.getItem('af_output_lang') || null;
 
+  function activeProjectId() {
+    const buttons = Array.from(document.querySelectorAll('#projectTabs .ptab.active'));
+    for (const b of buttons) {
+      const oc = b.getAttribute('onclick') || '';
+      const m = oc.match(/selectProject\('([^']+)'\)/);
+      if (m) return m[1];
+    }
+    try { return project || null; } catch (_) { return null; }
+  }
+
+  function effectiveUILang() {
+    try { if (uiLang) return uiLang; } catch (_) {}
+    return localStorage.getItem('af_ui') || document.documentElement.lang || 'es';
+  }
+
+  function effectiveOutputLang() {
+    return selectedOutputLang || effectiveUILang();
+  }
+
   const oldAddFragment = window.addFragment;
   window.addFragment = async function () {
     const text = document.getElementById('text')?.value.trim() || '';
@@ -24,19 +43,10 @@
   const compilerLabel = document.getElementById('compilerLabel');
   const outputLabelBase = compilerLabel?.textContent || 'Compilador editorial';
 
-  function effectiveUILang() {
-    return localStorage.getItem('af_ui') || document.documentElement.lang || 'es';
-  }
-
-  function effectiveOutputLang() {
-    return selectedOutputLang || effectiveUILang();
-  }
-
   function updateCompilerFlag() {
     if (!compilerLabel) return;
     const clean = compilerLabel.textContent.replace(/\s+(🇲🇽|🇬🇧|🇫🇷|🇮🇹|🇩🇪|🇯🇵|🇨🇳|🇮🇱|🇦🇪|🇷🇺|🇰🇷)$/u, '');
-    const base = clean || outputLabelBase;
-    compilerLabel.textContent = `${base} ${FLAGS[effectiveOutputLang()] || ''}`.trim();
+    compilerLabel.textContent = `${clean || outputLabelBase} ${FLAGS[effectiveOutputLang()] || ''}`.trim();
   }
 
   const oldSetOut = window.setOut;
@@ -63,43 +73,120 @@
     return result;
   };
 
-  const oldCompile = window.compileDoc;
+  // Keep source insertion attached to the project actually selected in the UI.
+  window.addSource = async function () {
+    const raw = document.getElementById('sourceRaw')?.value.trim() || '';
+    const pid = activeProjectId();
+    if (!pid || !raw) return;
+    const sourceStatus = document.getElementById('sourceStatus');
+    try {
+      const state = await api(`/api/projects/${pid}`);
+      let fragmentId = null;
+      try {
+        if (lastFragment && (state.fragments || []).some(f => f.id === lastFragment)) fragmentId = lastFragment;
+      } catch (_) {}
+      const x = await api(`/api/projects/${pid}/sources`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({raw, fragment_id:fragmentId})
+      });
+      if (sourceStatus) sourceStatus.textContent = '✓ ' + x.citekey;
+      document.getElementById('sourceRaw').value = '';
+      try { await refresh(); } catch (_) { if (window.selectProject) await window.selectProject(pid); }
+      try { projects = await api('/api/projects'); renderTabs(); } catch (_) {}
+    } catch (e) {
+      if (sourceStatus) sourceStatus.textContent = e.message;
+    }
+  };
+
+  // Compile from the project selected NOW, not from a stale preview/project state.
   window.compileDoc = async function () {
-    const status = document.getElementById('compileStatus');
+    const pid = activeProjectId();
+    if (!pid) return;
+
     const lang = effectiveOutputLang();
-    if (status) status.textContent = `Generando salida ${FLAGS[lang] || ''}…`;
-
-    await oldCompile.apply(this, arguments);
-
+    const status = document.getElementById('compileStatus');
     const paper = document.getElementById('paper');
-    const iframe = paper?.querySelector('iframe');
-    if (iframe) {
-      const raw = iframe.getAttribute('src') || iframe.src || '';
-      if (raw) {
-        try {
-          const u = new URL(raw, window.location.origin);
-          u.searchParams.set('_afrev', Date.now().toString());
-          iframe.src = u.pathname + u.search + u.hash;
-        } catch (_) {
-          iframe.src = raw + (raw.includes('?') ? '&' : '?') + '_afrev=' + Date.now();
+    const latexEl = document.getElementById('latex');
+    const texHolder = document.getElementById('texdl');
+    const bibHolder = document.getElementById('bibdl');
+    const pdfHolder = document.getElementById('pdfdl');
+
+    if (status) status.textContent = `Generando ${FLAGS[lang] || ''}…`;
+    if (paper) paper.innerHTML = '<div class="by" style="padding-top:70px">Generating new PDF…</div>';
+    if (pdfHolder) pdfHolder.innerHTML = '';
+
+    try {
+      const state = await api(`/api/projects/${pid}`);
+      const p = state.project || {};
+      let currentMode = 'divulgacion';
+      try { currentMode = editorial || currentMode; } catch (_) {}
+      const requestedTitle = document.getElementById('docTitle')?.value || p.title || 'Untitled';
+
+      const x = await api(`/api/projects/${pid}/compile`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          mode:currentMode,
+          title:requestedTitle,
+          author:p.author || 'Prof. Alberto Muñoz',
+          interface_language:effectiveUILang(),
+          output_language:lang
+        })
+      });
+
+      if (latexEl) latexEl.textContent = x.latex || '';
+
+      if (texHolder) {
+        texHolder.innerHTML = '';
+        const b = document.createElement('button');
+        b.textContent = '.tex';
+        b.onclick = () => downloadArtifact(x.tex_url, x.tex);
+        texHolder.appendChild(b);
+      }
+      if (bibHolder) {
+        bibHolder.innerHTML = '';
+        const b = document.createElement('button');
+        b.textContent = '.bib';
+        b.onclick = () => downloadArtifact(x.bib_url, x.bib);
+        bibHolder.appendChild(b);
+      }
+
+      if (x.pdf_url) {
+        const rev = x.revision || Date.now().toString();
+        const sep = x.pdf_url.includes('?') ? '&' : '?';
+        const previewUrl = `${x.pdf_url}${sep}_afrev=${encodeURIComponent(rev)}#toolbar=1`;
+        if (paper) {
+          paper.innerHTML = '';
+          const iframe = document.createElement('iframe');
+          iframe.src = previewUrl;
+          iframe.title = 'PDF preview';
+          iframe.style.width = '100%';
+          iframe.style.height = '760px';
+          iframe.style.border = '0';
+          paper.appendChild(iframe);
+        }
+        if (pdfHolder) {
+          const b = document.createElement('button');
+          b.textContent = 'Descargar PDF';
+          b.title = 'Descargar PDF';
+          b.onclick = () => downloadArtifact(x.pdf_url, x.pdf);
+          pdfHolder.appendChild(b);
+        }
+        if (status) status.textContent = `✓ ${FLAGS[x.language] || ''} ${LANG?.[x.language]?.[1] || x.language}`;
+      } else {
+        if (paper) paper.innerHTML = '<div class="by" style="padding-top:70px">No PDF was produced. LaTeX is available.</div>';
+        if (status) {
+          status.textContent = NON_LATIN.has(lang)
+            ? `✓ LaTeX generado en ${FLAGS[lang]} · PDF requiere XeLaTeX (texlive-xetex).`
+            : `LaTeX generado, pero la compilación PDF falló. Revisa el LaTeX o el log de TeX.`;
         }
       }
-      iframe.setAttribute('title', 'PDF preview');
-      iframe.style.width = '100%';
-      iframe.style.height = '760px';
-      iframe.style.border = '0';
+      updateCompilerFlag();
+    } catch (e) {
+      if (paper) paper.innerHTML = '<div class="by" style="padding-top:70px">Compilation failed.</div>';
+      if (status) status.textContent = e.message;
     }
-
-    const pdfHolder = document.getElementById('pdfdl');
-    const btn = pdfHolder?.querySelector('button');
-    if (btn) {
-      btn.textContent = 'Descargar PDF';
-      btn.title = 'Descargar PDF';
-    } else if (status && NON_LATIN.has(lang)) {
-      status.textContent = `✓ LaTeX generado en ${FLAGS[lang]} · Para PDF local en este idioma instala XeLaTeX (texlive-xetex) en el Spark.`;
-    }
-
-    updateCompilerFlag();
   };
 
   const text = document.getElementById('text');

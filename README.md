@@ -1,40 +1,40 @@
 # 🏭 Article Foundry
 
-### 🔒 Tu propia fundición local de ideas → papers, patentes y divulgación
+### 🔒 Your own local idea foundry → papers, patents, and science communication
 
-> **Pues sí, hay mucho ruido de piratería y de que si se roban tus ideas. Bueno, ahora sí puedes tener tu propio modelo y puedes hacer tu generación de ideas local. Yo escribo papers, patentes y algo de divulgación, y ahora puedes hacer todo en local. ¡Aquí el repo para que lo puedas clonar y hacer tu propio foundry de documentos!**
+> **Yes, there is a lot of noise about piracy, privacy, and whether somebody might steal your ideas. Well, now you can run your own model and do your idea generation locally. I write papers, patents, and some science and technology communication, and now you can do all of that locally. Here is the repository: clone it, connect your own resources, and build your own document foundry!**
 
-**Article Foundry** es un sistema *local-first* para convertir notas, fragmentos, ideas y fuentes que vas acumulando en una base de conocimiento estructurada y, cuando estés listo, compilarlas como un **artículo de divulgación**, un **paper científico estilo IEEE** o un **borrador de patente**.
+**Article Foundry** is a *local-first* system for turning notes, fragments, ideas, and sources accumulated over time into a structured knowledge base and, whenever you are ready, compiling that knowledge into a **science/technology communication article**, an **IEEE-style scientific paper**, or a **patent draft**.
 
-La idea es sencilla: en vez de empezar cada documento desde una página en blanco, vas alimentando tu propia fundición de conocimiento. Article Foundry relaciona conceptos, conserva fuentes y utiliza un LLM local para ayudarte a estructurar el material.
+The idea is simple: instead of starting every document from a blank page, you continuously feed your own knowledge foundry. Article Foundry connects concepts, keeps track of sources, and uses **your own LLM endpoint** to help organize and synthesize the material.
 
-🌐 Demo/instancia del autor: **https://foundry.albertomunoz.ai**  
-👨‍💻 Autor: **Prof. Alberto Muñoz — Tec de Monterrey**  
-🔗 CV: **https://cv.albertomunoz.ai**
+👨‍💻 Created by **Prof. Alberto Muñoz — Tecnológico de Monterrey**
+
+> 🚫 **There is intentionally no link to a hosted Article Foundry instance in this README.** This repository is meant to be cloned and run with **your own compute, your own LLM, your own storage, and your own infrastructure**. Please do not use the author's private server as a public backend.
 
 ---
 
-## ✨ ¿Qué hace?
+## ✨ What does it do?
 
 ```text
-💡 Fragmentos e ideas
+💡 Fragments and ideas
         ↓
-🔑 Keywords + conceptos
+🔑 Keywords + concepts
         ↓
-🧠 Taxonomía / grafo semántico
+🧠 Taxonomy / semantic graph
         ↓
-📚 Fuentes y evidencia
+📚 Sources and evidence
         ↓
 🏭 Article Foundry
         ↓
-   ┌──────────────┬──────────────┬──────────────┐
-   │ 📰 Divulgación│ 📄 IEEE Paper│ 💡 Patente   │
-   └──────────────┴──────────────┴──────────────┘
+   ┌────────────────┬──────────────┬──────────────┐
+   │ 📰 Communication│ 📄 IEEE Paper│ 💡 Patent    │
+   └────────────────┴──────────────┴──────────────┘
         ↓
 🧾 LaTeX → 📕 PDF
 ```
 
-Puedes introducir texto poco a poco y en distintos idiomas. El sistema mantiene una memoria persistente del proyecto y organiza el conocimiento aproximadamente como:
+You can add text incrementally and in different languages. The system keeps persistent project memory and organizes knowledge approximately as:
 
 ```text
 fragment → concepts → subtopics → topics
@@ -42,60 +42,62 @@ fragment → concepts → subtopics → topics
          → claims → contradictions → knowledge gaps
 ```
 
-## 🚀 Funciones principales
+## 🚀 Main features
 
-- 🧠 **LLM local** mediante un endpoint compatible con OpenAI.
-- 🔒 **Local-first:** tus fragmentos, proyectos y artefactos pueden permanecer en tu propia máquina.
-- 🧩 Ingesta incremental de ideas y fragmentos.
-- 🔑 Extracción asistida de keywords y conceptos.
-- 🕸️ Taxonomía y relaciones semánticas entre fragmentos.
-- 🌍 Entrada y generación multilingüe.
-- 📚 Fuentes en BibTeX, DOI, URL o texto libre.
-- 📰 Compilador para **divulgación**.
-- 📄 Compilador para **paper científico / IEEE**.
-- 💡 Compilador para **borrador de patente**.
-- 🧾 Generación automática de **LaTeX**.
-- 📕 Compilación y visualización de **PDF**.
-- 💾 Persistencia mediante SQLite.
-- ☁️ Sincronización opcional con Google Drive mediante `rclone`.
-- 🐧 Preparado para ejecutarse como servicio `systemd`.
-- 🌐 Puede publicarse detrás de un reverse proxy o Cloudflare Tunnel.
+- 🧠 **Local LLM support** through an OpenAI-compatible endpoint.
+- 🔒 **Local-first:** fragments, projects, and generated artifacts can stay on your own machine.
+- 🧩 Incremental ingestion of ideas and text fragments.
+- 🔑 LLM-assisted keyword and concept extraction.
+- 🕸️ Taxonomy and semantic relationships between fragments.
+- 🌍 Multilingual input and document generation.
+- 📚 Sources in BibTeX, DOI, URL, or free-form citation format.
+- 📰 Compiler for **science/technology communication**.
+- 📄 Compiler for **scientific / IEEE-style papers**.
+- 💡 Compiler for **patent drafts**.
+- 🧾 Automatic **LaTeX** generation.
+- 📕 **PDF** compilation and in-browser preview.
+- 💾 Persistent SQLite knowledge base.
+- ☁️ Optional Google Drive synchronization through `rclone`.
+- 🐧 Can run as an isolated `systemd` service.
+- 🌐 Can optionally sit behind your own reverse proxy or tunnel.
 
-> ⚠️ Article Foundry ayuda a organizar y redactar material. En papers, verifica resultados y referencias antes de publicar; en patentes, revisa claims, inventorship y requisitos con asesoría profesional cuando corresponda.
+> ⚠️ Article Foundry assists with organization and drafting. For scientific papers, verify results, claims, and references before publication. For patents, independently review claims, inventorship, novelty, and jurisdiction-specific requirements and seek professional advice when appropriate.
 
 ---
 
-## 🧱 Arquitectura
+## 🧱 Architecture
 
 ```text
-Browser
-   │
-   ▼
-FastAPI / Article Foundry
-   ├── SQLite knowledge base
-   ├── Local LLM adapter
-   ├── Semantic analysis
-   ├── Editorial compilers
-   └── LaTeX compiler
-            │
-            ▼
-        TEX + PDF
+Your browser
+     │
+     ▼
+Article Foundry / FastAPI
+     ├── SQLite knowledge base
+     ├── Your local LLM adapter
+     ├── Semantic analysis
+     ├── Editorial compilers
+     └── LaTeX compiler
+              │
+              ▼
+          TEX + PDF
 ```
 
-El LLM **no está incluido** en este repositorio. Article Foundry consume un endpoint local compatible con la API de OpenAI, por lo que puedes conectarlo al servidor/modelo que prefieras.
+The LLM itself is **not included** in this repository. Article Foundry consumes an OpenAI-compatible endpoint, allowing you to connect the local inference server and model that make sense for your hardware.
+
+**Nothing in the public repository requires or should point to the author's running LLM server.** Configure your own endpoint before using the application.
 
 ---
 
-## 📦 Clonar
+## 📦 Clone it
 
 ```bash
 git clone https://github.com/LuisAlbertoMunozUbando/Article-Foundry.git
 cd Article-Foundry
 ```
 
-## ⚙️ Instalación rápida
+## ⚙️ Quick installation
 
-Requiere Python 3 y un servidor LLM compatible con OpenAI.
+You need Python 3 and an OpenAI-compatible LLM server that **you control**.
 
 ```bash
 python3 -m venv .venv
@@ -104,9 +106,9 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edita `.env` para apuntar a **tu** servidor local. El archivo de ejemplo contiene únicamente valores de configuración de muestra; no guardes credenciales reales en Git.
+Edit `.env` and point Article Foundry to **your own local inference server**. Never commit real credentials to Git.
 
-Ejemplo conceptual:
+Example configuration:
 
 ```dotenv
 ARTICLE_FOUNDRY_DB=./data/article_foundry.db
@@ -117,81 +119,93 @@ ARTICLE_FOUNDRY_LLM_MODEL=your-local-model
 ARTICLE_FOUNDRY_PORT=8040
 ```
 
-Arranca Article Foundry:
+`127.0.0.1:8001` above is only an **example localhost address**. It refers to port 8001 on the machine where *you* run Article Foundry; it does not connect to the author's infrastructure.
+
+Start Article Foundry:
 
 ```bash
 uvicorn app.main:app --host 127.0.0.1 --port 8040
 ```
 
-Y abre la aplicación desde el navegador a través de localhost, SSH forwarding o el reverse proxy/túnel que tú configures.
+Then access it through localhost, SSH port forwarding, or a reverse proxy/tunnel that **you configure on your own infrastructure**.
 
 ---
 
-## 🧪 Flujo de trabajo
+## 🧪 Workflow
 
-### 1. 💡 Crea un proyecto
+### 1. 💡 Create a project
 
-Cada proyecto mantiene sus propios fragmentos, conceptos, relaciones, fuentes y documentos generados.
+Each project keeps its own fragments, concepts, relationships, sources, and generated documents.
 
-### 2. ✍️ Alimenta la fundición
+### 2. ✍️ Feed the foundry
 
-Pega una idea, párrafo, resultado, reflexión o fragmento. Puedes hacerlo durante días o semanas: no necesitas escribir el documento completo de una vez.
+Paste an idea, paragraph, result, reflection, or fragment. Keep adding material over days or weeks; you do not need to write the complete document at once.
 
-### 3. 📚 Añade las fuentes
+### 3. 📚 Add sources
 
-Puedes conservar bibliografía junto con el conocimiento que estás construyendo.
+Keep bibliography and evidence together with the knowledge you are building.
 
-### 4. 🧠 Deja crecer el mapa
+### 4. 🧠 Let the knowledge map grow
 
-Article Foundry extrae conceptos y construye relaciones entre el material acumulado.
+Article Foundry extracts concepts and builds relationships across the accumulated material.
 
-### 5. 🏭 Compila
+### 5. 🏭 Compile
 
-Selecciona el tipo de salida:
+Choose an editorial output:
 
-- 📰 **Divulgación:** contexto → problema → analogía → explicación → evidencia → implicaciones → cierre.
+- 📰 **Communication:** Context → Problem → Analogy → Explanation → Evidence → Implications → Closing.
 - 📄 **IEEE:** Title → Abstract → Keywords → Introduction → Related Work → Methodology → Experiments → Results → Discussion → Conclusion → References.
-- 💡 **Patente:** Title → Technical Field → Background → Problem → Summary → Detailed Description → Embodiments → Figures → Claims → Abstract.
+- 💡 **Patent:** Title → Technical Field → Background → Problem → Summary → Detailed Description → Embodiments → Figures → Claims → Abstract.
 
-El resultado queda disponible como **LaTeX** y, cuando existe un compilador TeX compatible en el sistema, como **PDF**.
+The result is saved as **LaTeX** and, when a compatible TeX compiler is available on your system, as a **PDF**.
 
 ---
 
-## 🌍 Idiomas
+## 🌍 Languages
 
-La interfaz y el flujo soportan múltiples idiomas, entre ellos:
+The interface and workflow support multiple languages, including:
 
 🇲🇽 Español · 🇬🇧 English · 🇫🇷 Français · 🇮🇹 Italiano · 🇩🇪 Deutsch · 🇯🇵 日本語 · 🇨🇳 中文 · 🇮🇱 עברית · 🇦🇪 العربية · 🇷🇺 Русский · 🇰🇷 한국어
 
-El idioma de entrada puede ser distinto del idioma del documento final.
+The input language can be different from the final document language.
 
 ---
 
-## ☁️ Google Drive opcional
+## ☁️ Optional Google Drive backup
 
-El repositorio incluye `deploy/drive_sync.py` para crear un snapshot de la base de datos y exportar proyectos/artefactos antes de sincronizarlos mediante `rclone`.
+The repository includes `deploy/drive_sync.py` to create a local snapshot of the database and export projects/artifacts before synchronizing them with `rclone`.
 
-La integración es **opcional**. Configura tu propio remote y folder ID mediante variables de entorno. **No subas tokens OAuth, passwords, archivos `.env` privados ni configuración de `rclone` al repositorio.**
+This integration is **optional** and must be configured with **your own Google Drive account, your own rclone remote, and your own destination folder**.
 
----
-
-## 🔐 Privacidad y seguridad
-
-La filosofía es que puedas ejecutar la cadena de generación en infraestructura que tú controles. Para un flujo realmente local debes usar también un **LLM local** y evitar configurar servicios externos que envíen tus datos fuera de la máquina.
-
-Este repositorio **no contiene passwords, tokens OAuth, claves de Cloudflare ni credenciales de Google Drive**. Mantén esos secretos fuera de Git.
-
-Si expones Article Foundry a Internet, protégelo con autenticación y HTTPS; no publiques directamente una instancia con proyectos privados sin una capa de acceso adecuada.
+Do **not** copy the author's Google Drive folder IDs or OAuth configuration. Do **not** commit OAuth tokens, passwords, private `.env` files, rclone configuration files, Cloudflare credentials, or other secrets.
 
 ---
 
-## 🧩 Integración sin invadir otros servicios
+## 🔐 Privacy and security
 
-Article Foundry fue diseñado para vivir como servicio independiente. No necesita detener, reiniciar ni reconfigurar otros servidores de IA. Si ya tienes un LLM funcionando, simplemente consume su endpoint HTTP compatible.
+The purpose of Article Foundry is to let you run the document-generation pipeline on infrastructure you control.
+
+For a genuinely local workflow:
+
+- run the LLM on your own hardware;
+- point `ARTICLE_FOUNDRY_LLM_BASE_URL` to your own local inference endpoint;
+- keep the SQLite database and artifacts on storage you control;
+- use external synchronization only if you explicitly want it;
+- do not expose the application publicly unless you add appropriate authentication and HTTPS.
+
+The public repository contains **no passwords, OAuth tokens, private server credentials, Cloudflare tunnel tokens, or Google Drive credentials**.
 
 ---
 
-## 🛠️ API principal
+## 🧩 Designed to coexist with your infrastructure
+
+Article Foundry is designed as an independent service. It does not need to stop, restart, or reconfigure your other AI services. If you already have a compatible local LLM server, Article Foundry simply consumes its HTTP API.
+
+You are encouraged to adapt the ports, models, storage, deployment, and backup strategy to your own machine.
+
+---
+
+## 🛠️ Main API
 
 ```text
 GET    /api/projects
@@ -206,15 +220,17 @@ GET    /api/system/llm
 
 ---
 
-## 🤝 Haz tu propio Foundry
+## 🤝 Build your own Foundry
 
-Clónalo, conecta **tu modelo local**, cambia el flujo editorial y conviértelo en tu propia memoria de investigación y escritura.
+Clone the repository, connect **your own local model**, adapt the editorial workflow, and turn it into your own research and writing memory.
 
 ```bash
 git clone https://github.com/LuisAlbertoMunozUbando/Article-Foundry.git
 ```
 
-**💡 Tus ideas. 🧠 Tu modelo. 💻 Tu máquina. 🏭 Tu Foundry.**
+No hosted account is required. No author's server is required. **The intended deployment is yours.**
+
+**💡 Your ideas. 🧠 Your model. 💻 Your machine. 🏭 Your Foundry.**
 
 ---
 

@@ -1,5 +1,12 @@
-// Article Foundry UI behavior patch: '.' means generate without adding a fragment.
+// Article Foundry UI behavior patch
 (() => {
+  const FLAGS = {
+    es:'🇲🇽', en:'🇬🇧', fr:'🇫🇷', it:'🇮🇹', de:'🇩🇪',
+    ja:'🇯🇵', zh:'🇨🇳', he:'🇮🇱', ar:'🇦🇪', ru:'🇷🇺', ko:'🇰🇷'
+  };
+  const NON_LATIN = new Set(['ja','zh','he','ar','ru','ko']);
+  let selectedOutputLang = localStorage.getItem('af_output_lang') || null;
+
   const oldAddFragment = window.addFragment;
   window.addFragment = async function () {
     const text = document.getElementById('text')?.value.trim() || '';
@@ -14,14 +21,59 @@
     return oldAddFragment.apply(this, arguments);
   };
 
+  const compilerLabel = document.getElementById('compilerLabel');
+  const outputLabelBase = compilerLabel?.textContent || 'Compilador editorial';
+
+  function effectiveUILang() {
+    return localStorage.getItem('af_ui') || document.documentElement.lang || 'es';
+  }
+
+  function effectiveOutputLang() {
+    return selectedOutputLang || effectiveUILang();
+  }
+
+  function updateCompilerFlag() {
+    if (!compilerLabel) return;
+    const clean = compilerLabel.textContent.replace(/\s+(🇲🇽|🇬🇧|🇫🇷|🇮🇹|🇩🇪|🇯🇵|🇨🇳|🇮🇱|🇦🇪|🇷🇺|🇰🇷)$/u, '');
+    const base = clean || outputLabelBase;
+    compilerLabel.textContent = `${base} ${FLAGS[effectiveOutputLang()] || ''}`.trim();
+  }
+
+  const oldSetOut = window.setOut;
+  window.setOut = function (lang) {
+    selectedOutputLang = lang || null;
+    if (selectedOutputLang) localStorage.setItem('af_output_lang', selectedOutputLang);
+    else localStorage.removeItem('af_output_lang');
+    const result = oldSetOut.apply(this, arguments);
+    setTimeout(updateCompilerFlag, 0);
+    return result;
+  };
+
+  const oldSetUI = window.setUI;
+  window.setUI = function () {
+    const result = oldSetUI.apply(this, arguments);
+    setTimeout(updateCompilerFlag, 0);
+    return result;
+  };
+
+  const oldApplyLang = window.applyLang;
+  window.applyLang = function () {
+    const result = oldApplyLang.apply(this, arguments);
+    setTimeout(updateCompilerFlag, 0);
+    return result;
+  };
+
   const oldCompile = window.compileDoc;
   window.compileDoc = async function () {
+    const status = document.getElementById('compileStatus');
+    const lang = effectiveOutputLang();
+    if (status) status.textContent = `Generando salida ${FLAGS[lang] || ''}…`;
+
     await oldCompile.apply(this, arguments);
+
     const paper = document.getElementById('paper');
     const iframe = paper?.querySelector('iframe');
     if (iframe) {
-      // The generated PDF filename can be identical on repeated compiles during the
-      // same day. Force a new URL so the browser/PDF viewer cannot reuse stale bytes.
       const raw = iframe.getAttribute('src') || iframe.src || '';
       if (raw) {
         try {
@@ -37,43 +89,17 @@
       iframe.style.height = '760px';
       iframe.style.border = '0';
     }
+
     const pdfHolder = document.getElementById('pdfdl');
     const btn = pdfHolder?.querySelector('button');
     if (btn) {
       btn.textContent = 'Descargar PDF';
       btn.title = 'Descargar PDF';
+    } else if (status && NON_LATIN.has(lang)) {
+      status.textContent = `✓ LaTeX generado en ${FLAGS[lang]} · Para PDF local en este idioma instala XeLaTeX (texlive-xetex) en el Spark.`;
     }
-  };
 
-  const compilerLabel = document.getElementById('compilerLabel');
-  const updateCompilerFlag = () => {
-    if (!compilerLabel || !window.LANG) return;
-    const base = (window.T?.[window.uiLang]?.compiler) || compilerLabel.dataset.base || compilerLabel.textContent.replace(/\s+[🇦-🇿]{2}$/u, '');
-    compilerLabel.dataset.base = base;
-    const effectiveLang = window.outLang || window.uiLang || 'es';
-    const flag = window.LANG?.[effectiveLang]?.[0] || '';
-    compilerLabel.textContent = `${base} ${flag}`.trim();
-  };
-
-  const oldSetOut = window.setOut;
-  window.setOut = function (lang) {
-    const result = oldSetOut.apply(this, arguments);
-    setTimeout(updateCompilerFlag, 0);
-    return result;
-  };
-
-  const oldSetUI = window.setUI;
-  window.setUI = function (lang) {
-    const result = oldSetUI.apply(this, arguments);
-    setTimeout(updateCompilerFlag, 0);
-    return result;
-  };
-
-  const oldApplyLang = window.applyLang;
-  window.applyLang = function () {
-    const result = oldApplyLang.apply(this, arguments);
-    setTimeout(updateCompilerFlag, 0);
-    return result;
+    updateCompilerFlag();
   };
 
   const text = document.getElementById('text');

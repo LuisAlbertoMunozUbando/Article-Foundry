@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import json, os, shutil, sqlite3, subprocess, sys, tempfile
+import json, os, shutil, sqlite3, subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parent.parent
 DB = Path(os.getenv('ARTICLE_FOUNDRY_DB', ROOT/'data/article_foundry.db'))
 ART = Path(os.getenv('ARTICLE_FOUNDRY_ARTIFACTS', ROOT/'data/artifacts'))
 EXPORT = Path(os.getenv('ARTICLE_FOUNDRY_DRIVE_EXPORT', ROOT/'data/drive-export'))
-REMOTE = os.getenv('ARTICLE_FOUNDRY_RCLONE_REMOTE','').strip()
-REMOTE_FOLDER = os.getenv('ARTICLE_FOUNDRY_DRIVE_FOLDER','Article Foundry').strip('/')
+REMOTE = os.getenv('ARTICLE_FOUNDRY_RCLONE_REMOTE','article-foundry-drive').strip().rstrip(':')
+ROOT_FOLDER_ID = os.getenv('ARTICLE_FOUNDRY_DRIVE_ROOT_FOLDER_ID','1vQojgt2F0jt3YF7DwEZ5097pvCJ61wGs').strip()
 
 
 def safe_name(s:str)->str:
@@ -27,6 +27,8 @@ def snapshot_db(dst:Path):
 
 
 def export_projects():
+    if EXPORT.exists():
+        shutil.rmtree(EXPORT)
     EXPORT.mkdir(parents=True,exist_ok=True)
     db_copy=EXPORT/'article_foundry.db'
     snapshot_db(db_copy)
@@ -54,14 +56,11 @@ def export_projects():
 
 
 def sync_drive():
-    if not REMOTE:
-        raise SystemExit('ARTICLE_FOUNDRY_RCLONE_REMOTE is not set')
     if not shutil.which('rclone'):
         raise SystemExit('rclone is not installed')
-    target=f'{REMOTE}:{REMOTE_FOLDER}'
-    cmd=['rclone','copy',str(EXPORT),target,'--create-empty-src-dirs','--fast-list','--transfers','4','--checkers','8']
+    cmd=['rclone','copy',str(EXPORT),f'{REMOTE}:','--drive-root-folder-id',ROOT_FOLDER_ID,'--create-empty-src-dirs','--fast-list','--transfers','4','--checkers','8']
     subprocess.run(cmd,check=True)
-    print(f'Synced {EXPORT} -> {target}')
+    print(f'Synced {EXPORT} -> {REMOTE}: (root folder id {ROOT_FOLDER_ID})')
 
 
 if __name__=='__main__':

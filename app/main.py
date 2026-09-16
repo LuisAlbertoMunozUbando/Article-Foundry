@@ -17,7 +17,7 @@ KEY=os.getenv('ARTICLE_FOUNDRY_LLM_API_KEY','local')
 MODEL=os.getenv('ARTICLE_FOUNDRY_LLM_MODEL','')
 DB.parent.mkdir(parents=True,exist_ok=True); ART.mkdir(parents=True,exist_ok=True)
 
-app=FastAPI(title='Article Foundry',version='0.1.1')
+app=FastAPI(title='Article Foundry',version='0.2.0')
 
 def conn():
  c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
@@ -27,22 +27,29 @@ def init():
   c.executescript('''CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,title TEXT,author TEXT,created TEXT);
   CREATE TABLE IF NOT EXISTS fragments(id TEXT PRIMARY KEY,project_id TEXT,text TEXT,keywords TEXT,kind TEXT,summary TEXT,created TEXT);
   CREATE TABLE IF NOT EXISTS relations(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT,a TEXT,b TEXT,label TEXT,score REAL);
-  CREATE TABLE IF NOT EXISTS concepts(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT,name TEXT,parent TEXT,UNIQUE(project_id,name));''')
+  CREATE TABLE IF NOT EXISTS concepts(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT,name TEXT,parent TEXT,UNIQUE(project_id,name));
+  CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY,project_id TEXT,fragment_id TEXT,raw TEXT,source_type TEXT,citekey TEXT,bibtex TEXT,created TEXT);''')
 init()
 
 class ProjectIn(BaseModel):
  title:str='Untitled project'; author:str='Prof. Alberto Munoz'
 class FragmentIn(BaseModel):
  text:str=Field(min_length=1); keywords:list[str]=[]
+class SourceIn(BaseModel):
+ raw:str=Field(min_length=1); fragment_id:str|None=None
 class CompileIn(BaseModel):
  mode:Literal['divulgacion','ieee','patent']='divulgacion'; title:str|None=None; author:str|None=None
 
 def jload(s):
  try:return json.loads(s)
  except:return []
+
 def tex(s:str)->str:
  for a,b in [('\\','\\textbackslash{}'),('&','\\&'),('%','\\%'),('$','\\$'),('#','\\#'),('_','\\_'),('{','\\{'),('}','\\}')]: s=s.replace(a,b)
  return s
+
+def bib_escape(s:str)->str:
+ return str(s).replace('\\','\\textbackslash{}').replace('{','\\{').replace('}','\\}')
 
 def fallback_keywords(text):
  stop=set('para como desde sobre entre donde cuando porque este esta esto una unos unas del las los con por que sus son fue han mas muy sin al se su un el la y en de'.split())
@@ -52,11 +59,29 @@ def fallback_keywords(text):
   if w not in stop and w not in out:out.append(w)
  return out[:8]
 
+def normalize_source(raw:str):
+ s=raw.strip(); now=date.today().isoformat(); sid=uuid.uuid4().hex[:8]
+ m=re.match(r'@\w+\s*\{\s*([^,\s]+)',s,re.I|re.S)
+ if m:
+  return 'bibtex',m.group(1),s
+ doi=re.search(r'(?:https?://(?:dx\.)?doi\.org/|doi:\s*)?(10\.\d{4,9}/[-._;()/:A-Z0-9]+)',s,re.I)
+ if doi:
+  d=doi.group(1).rstrip('.,;')
+  key='doi_'+re.sub(r'[^A-Za-z0-9]+','_',d)[-40:].strip('_')
+  bib=f'@misc{{{key},\n  title = {{{bib_escape(d)}}},\n  howpublished = {{DOI: {bib_escape(d)}}},\n  url = {{https://doi.org/{d}}},\n  note = {{Accessed {now}}}\n}}'
+  return 'doi',key,bib
+ if re.match(r'https?://',s,re.I):
+  key='web_'+sid
+  bib=f'@misc{{{key},\n  title = {{{bib_escape(s)}}},\n  howpublished = {{Web resource}},\n  url = {{{s}}},\n  note = {{Accessed {now}}}\n}}'
+  return 'url',key,bib
+ key='ref_'+sid
+ bib=f'@misc{{{key},\n  title = {{{bib_escape(s[:180])}}},\n  note = {{{bib_escape(s)}}}\n}}'
+ return 'citation',key,bib
+
 async def llm_json(text,user_keywords):
  prompt=f'''Analyze this knowledge fragment for Article Foundry. Return ONLY valid JSON with keys summary (string), kind (one of idea,evidence,method,result,claim,background,application,risk), keywords (array max 8), concepts (array max 6), relationships (array of short semantic relation labels). User keywords: {user_keywords}\nFRAGMENT:\n{text}'''
  try:
-  model=MODEL
-  headers={'Authorization':f'Bearer {KEY}'}
+  model=MODEL; headers={'Authorization':f'Bearer {KEY}'}
   async with httpx.AsyncClient(timeout=90) as h:
    if not model:
     r=await h.get(f'{LLM}/models',headers=headers); r.raise_for_status(); model=r.json()['data'][0]['id']
@@ -67,7 +92,8 @@ async def llm_json(text,user_keywords):
   return {'summary':text[:280],'kind':'idea','keywords':ks,'concepts':ks[:5],'relationships':[]}
 
 @app.get('/api/health')
-def health(): return {'ok':True,'service':'article-foundry','db':str(DB)}
+def health(): return {'ok':True,'service':'article-foundry','version':'0.2.0','db':str(DB)}
+
 @app.get('/api/system/llm')
 async def llm_status():
  try:
@@ -79,10 +105,9 @@ async def llm_status():
 @app.get('/api/projects')
 def list_projects():
  with conn() as c:
-  rows=c.execute('''SELECT p.id,p.title,p.author,p.created,COUNT(f.id) AS fragment_count
-                    FROM projects p LEFT JOIN fragments f ON f.project_id=p.id
-                    GROUP BY p.id,p.title,p.author,p.created
-                    ORDER BY p.created DESC''').fetchall()
+  rows=c.execute('''SELECT p.id,p.title,p.author,p.created,COUNT(DISTINCT f.id) AS fragment_count,COUNT(DISTINCT s.id) AS source_count
+                    FROM projects p LEFT JOIN fragments f ON f.project_id=p.id LEFT JOIN sources s ON s.project_id=p.id
+                    GROUP BY p.id,p.title,p.author,p.created ORDER BY p.created DESC''').fetchall()
  return [dict(r) for r in rows]
 
 @app.post('/api/projects')
@@ -100,7 +125,8 @@ def get_project(pid:str):
   for f in fs:f['keywords']=jload(f['keywords'])
   concepts=[dict(x) for x in c.execute('SELECT name,parent FROM concepts WHERE project_id=? ORDER BY name',(pid,))]
   rel=[dict(x) for x in c.execute('SELECT a,b,label,score FROM relations WHERE project_id=?',(pid,))]
- return {'project':dict(p),'fragments':fs,'concepts':concepts,'relations':rel}
+  sources=[dict(x) for x in c.execute('SELECT * FROM sources WHERE project_id=? ORDER BY created',(pid,))]
+ return {'project':dict(p),'fragments':fs,'concepts':concepts,'relations':rel,'sources':sources}
 
 @app.post('/api/projects/{pid}/fragments')
 async def add_fragment(pid:str,f:FragmentIn):
@@ -109,22 +135,41 @@ async def add_fragment(pid:str,f:FragmentIn):
   if not c.execute('SELECT 1 FROM projects WHERE id=?',(pid,)).fetchone():raise HTTPException(404,'Project not found')
   prior=list(c.execute('SELECT id,keywords FROM fragments WHERE project_id=?',(pid,)))
   c.execute('INSERT INTO fragments VALUES(?,?,?,?,?,?,?)',(fid,pid,f.text,json.dumps(ks,ensure_ascii=False),analysis.get('kind','idea'),analysis.get('summary',''),datetime.now().isoformat(timespec='seconds')))
-  for concept in analysis.get('concepts',ks[:5]): c.execute('INSERT OR IGNORE INTO concepts(project_id,name,parent) VALUES(?,?,?)',(pid,str(concept),None))
+  for concept in analysis.get('concepts',ks[:5]):c.execute('INSERT OR IGNORE INTO concepts(project_id,name,parent) VALUES(?,?,?)',(pid,str(concept),None))
   low={x.lower() for x in ks}
   for q in prior:
    old=jload(q['keywords']); overlap=len(low & {x.lower() for x in old})/max(1,len(low|{x.lower() for x in old}))
    if overlap>0:c.execute('INSERT INTO relations(project_id,a,b,label,score) VALUES(?,?,?,?,?)',(pid,q['id'],fid,'shared concepts',round(overlap,3)))
  return {'id':fid,'analysis':analysis,'keywords':ks}
 
-def latex_document(mode,title,author,frags):
+@app.post('/api/projects/{pid}/sources')
+def add_source(pid:str,s:SourceIn):
+ stype,key,bib=normalize_source(s.raw); sid=str(uuid.uuid4()); now=datetime.now().isoformat(timespec='seconds')
+ with conn() as c:
+  if not c.execute('SELECT 1 FROM projects WHERE id=?',(pid,)).fetchone():raise HTTPException(404,'Project not found')
+  if s.fragment_id and not c.execute('SELECT 1 FROM fragments WHERE id=? AND project_id=?',(s.fragment_id,pid)).fetchone():raise HTTPException(404,'Fragment not found')
+  c.execute('INSERT INTO sources VALUES(?,?,?,?,?,?,?,?)',(sid,pid,s.fragment_id,s.raw,stype,key,bib,now))
+ return {'id':sid,'source_type':stype,'citekey':key,'bibtex':bib,'created':now}
+
+@app.delete('/api/projects/{pid}/sources/{sid}')
+def delete_source(pid:str,sid:str):
+ with conn() as c:
+  r=c.execute('DELETE FROM sources WHERE id=? AND project_id=?',(sid,pid))
+  if r.rowcount==0:raise HTTPException(404,'Source not found')
+ return {'ok':True}
+
+def bibliography_tail(has_sources:bool):
+ return '\n\\bibliographystyle{IEEEtran}\n\\bibliography{references}\n' if has_sources else ''
+
+def latex_document(mode,title,author,frags,has_sources=False):
  body='\n\n'.join(tex(f['text']) for f in frags) or 'Contenido pendiente.'
+ cites='\\nocite{*}\n' if has_sources else ''
  if mode=='ieee':
-  return f'''\\documentclass[conference]{{IEEEtran}}\n\\usepackage[utf8]{{inputenc}}\n\\title{{{tex(title)}}}\n\\author{{\\IEEEauthorblockN{{{tex(author)}}}}}\n\\begin{{document}}\\maketitle\n\\begin{{abstract}}Documento generado incrementalmente por Article Foundry.\\end{{abstract}}\n\\section{{Introduction}}\n{body}\n\\section{{Discussion}}\nLa estructura se refinara conforme se incorporen nuevos fragmentos.\n\\section{{Conclusion}}\nTrabajo en progreso.\n\\end{{document}}'''
- if mode=='patent':
-  secs=['Technical Field','Background','Summary of the Invention','Detailed Description','Embodiments','Claims','Abstract']
- else: secs=['La idea central','Por que importa','Evidencia y conexiones','Implicaciones','Conclusion']
+  return f'''\\documentclass[conference]{{IEEEtran}}\n\\usepackage[utf8]{{inputenc}}\n\\usepackage{{url}}\n\\title{{{tex(title)}}}\n\\author{{\\IEEEauthorblockN{{{tex(author)}}}}}\n\\begin{{document}}\\maketitle\n\\begin{{abstract}}Documento generado incrementalmente por Article Foundry.\\end{{abstract}}\n\\section{{Introduction}}\n{body}\n\\section{{Discussion}}\nLa estructura se refinara conforme se incorporen nuevos fragmentos.\n\\section{{Conclusion}}\nTrabajo en progreso.\n{cites}{bibliography_tail(has_sources)}\\end{{document}}'''
+ if mode=='patent':secs=['Technical Field','Background','Summary of the Invention','Detailed Description','Embodiments','Claims','Abstract']
+ else:secs=['La idea central','Por que importa','Evidencia y conexiones','Implicaciones','Conclusion']
  chunks=[f'\\section{{{s}}}\n{body if i==0 else "Seccion en construccion a partir de la taxonomia viva."}' for i,s in enumerate(secs)]
- return f'''\\documentclass[11pt]{{article}}\n\\usepackage[utf8]{{inputenc}}\n\\usepackage[T1]{{fontenc}}\n\\usepackage[spanish]{{babel}}\n\\usepackage[margin=1in]{{geometry}}\n\\title{{{tex(title)}}}\n\\author{{{tex(author)}}}\n\\date{{{date.today().isoformat()}}}\n\\begin{{document}}\\maketitle\n{chr(10).join(chunks)}\n\\end{{document}}'''
+ return f'''\\documentclass[11pt]{{article}}\n\\usepackage[utf8]{{inputenc}}\n\\usepackage[T1]{{fontenc}}\n\\usepackage[spanish]{{babel}}\n\\usepackage[margin=1in]{{geometry}}\n\\usepackage{{url}}\n\\title{{{tex(title)}}}\n\\author{{{tex(author)}}}\n\\date{{{date.today().isoformat()}}}\n\\begin{{document}}\\maketitle\n{chr(10).join(chunks)}\n{cites}{bibliography_tail(has_sources)}\\end{{document}}'''
 
 @app.post('/api/projects/{pid}/compile')
 def compile_project(pid:str,req:CompileIn):
@@ -132,15 +177,25 @@ def compile_project(pid:str,req:CompileIn):
   p=c.execute('SELECT * FROM projects WHERE id=?',(pid,)).fetchone()
   if not p:raise HTTPException(404,'Project not found')
   fs=[dict(x) for x in c.execute('SELECT * FROM fragments WHERE project_id=? ORDER BY created',(pid,))]
+  sources=[dict(x) for x in c.execute('SELECT * FROM sources WHERE project_id=? ORDER BY created',(pid,))]
  title=req.title or p['title']; author=req.author or p['author']; out=ART/pid; out.mkdir(parents=True,exist_ok=True)
- stem=f'{req.mode}-{date.today().isoformat()}'; tp=out/f'{stem}.tex'; tp.write_text(latex_document(req.mode,title,author,fs),encoding='utf-8')
+ stem=f'{req.mode}-{date.today().isoformat()}'; tp=out/f'{stem}.tex'; bp=out/'references.bib'
+ tp.write_text(latex_document(req.mode,title,author,fs,bool(sources)),encoding='utf-8')
+ bp.write_text('\n\n'.join(s['bibtex'] for s in sources),encoding='utf-8')
  pdf=None; engine=shutil.which('latexmk') or shutil.which('pdflatex')
  if engine:
-  cmd=[engine,'-pdf','-interaction=nonstopmode','-halt-on-error',tp.name] if Path(engine).name=='latexmk' else [engine,'-interaction=nonstopmode','-halt-on-error',tp.name]
   try:
-   subprocess.run(cmd,cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60,check=True); candidate=out/f'{stem}.pdf'; pdf=candidate.name if candidate.exists() else None
-  except Exception: pass
- return {'tex':tp.name,'pdf':pdf,'tex_url':f'/api/projects/{pid}/artifacts/{tp.name}','pdf_url':f'/api/projects/{pid}/artifacts/{pdf}' if pdf else None,'latex':tp.read_text(encoding='utf-8')}
+   if Path(engine).name=='latexmk':
+    subprocess.run([engine,'-pdf','-interaction=nonstopmode','-halt-on-error',tp.name],cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=90,check=True)
+   else:
+    subprocess.run([engine,'-interaction=nonstopmode','-halt-on-error',tp.name],cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=90,check=True)
+    if sources and shutil.which('bibtex'):
+     subprocess.run(['bibtex',stem],cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60,check=False)
+     subprocess.run([engine,'-interaction=nonstopmode','-halt-on-error',tp.name],cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=90,check=False)
+     subprocess.run([engine,'-interaction=nonstopmode','-halt-on-error',tp.name],cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=90,check=False)
+   candidate=out/f'{stem}.pdf'; pdf=candidate.name if candidate.exists() else None
+  except Exception:pass
+ return {'tex':tp.name,'pdf':pdf,'bib':bp.name,'tex_url':f'/api/projects/{pid}/artifacts/{tp.name}','pdf_url':f'/api/projects/{pid}/artifacts/{pdf}' if pdf else None,'bib_url':f'/api/projects/{pid}/artifacts/{bp.name}','latex':tp.read_text(encoding='utf-8'),'bibtex':bp.read_text(encoding='utf-8')}
 
 @app.get('/api/projects/{pid}/artifacts/{name}')
 def artifact(pid:str,name:str):

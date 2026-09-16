@@ -34,6 +34,39 @@
     }
   };
 
+  const compilerLabel = document.getElementById('compilerLabel');
+  const updateCompilerFlag = () => {
+    if (!compilerLabel || !window.LANG) return;
+    const base = (window.T?.[window.uiLang]?.compiler) || compilerLabel.dataset.base || compilerLabel.textContent.replace(/\s+[🇦-🇿]{2}$/u, '');
+    compilerLabel.dataset.base = base;
+    const effectiveLang = window.outLang || window.uiLang || 'es';
+    const flag = window.LANG?.[effectiveLang]?.[0] || '';
+    compilerLabel.textContent = `${base} ${flag}`.trim();
+  };
+
+  const oldSetOut = window.setOut;
+  window.setOut = function (lang) {
+    const result = oldSetOut.apply(this, arguments);
+    setTimeout(updateCompilerFlag, 0);
+    return result;
+  };
+
+  const oldSetUI = window.setUI;
+  window.setUI = function (lang) {
+    const result = oldSetUI.apply(this, arguments);
+    setTimeout(updateCompilerFlag, 0);
+    return result;
+  };
+
+  const oldApplyLang = window.applyLang;
+  window.applyLang = function () {
+    const result = oldApplyLang.apply(this, arguments);
+    setTimeout(updateCompilerFlag, 0);
+    return result;
+  };
+
   const text = document.getElementById('text');
   if (text) text.placeholder = 'Pega texto aquí en cualquier idioma… o escribe . para generar sin agregar texto nuevo';
+
+  updateCompilerFlag();
 })();

@@ -1,0 +1,8 @@
+# Add this ingress rule to the EXISTING named Cloudflare Tunnel configuration.
+# Do not remove or reorder unrelated production routes unless you know their dependencies.
+# The catch-all 404 rule must remain last.
+
+ingress:
+  - hostname: foundry.albertomunoz.ai
+    service: http://127.0.0.1:8040
+  - service: http_status:404

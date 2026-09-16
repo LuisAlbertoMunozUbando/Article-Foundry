@@ -4,14 +4,6 @@
   const NON_LATIN = new Set(['ja','zh','he','ar','ru','ko']);
   let selectedOutputLang = localStorage.getItem('af_output_lang') || null;
 
-  function setSelectedOutput(lang){
-    selectedOutputLang = lang || null;
-    if(selectedOutputLang) localStorage.setItem('af_output_lang', selectedOutputLang);
-    else localStorage.removeItem('af_output_lang');
-    try { if(typeof outLang !== 'undefined') outLang = selectedOutputLang; } catch(_) {}
-    updateCompilerFlag();
-  }
-
   function activeProjectId(){
     for(const b of Array.from(document.querySelectorAll('#projectTabs .ptab.active'))){
       const m=(b.getAttribute('onclick')||'').match(/selectProject\('([^']+)'\)/);
@@ -25,16 +17,37 @@
   }
   function effectiveOutputLang(){return selectedOutputLang||effectiveUILang()}
 
+  // Keep the flag OUTSIDE #compilerLabel. applyLang() rewrites compilerLabel.textContent,
+  // so an embedded flag was being erased every time the UI language refreshed.
   const compilerLabel=document.getElementById('compilerLabel');
-  const outputLabelBase=compilerLabel?.textContent||'Compilador editorial';
+  let compilerFlag=document.getElementById('compilerFlag');
+  if(compilerLabel && !compilerFlag){
+    const wrap=document.createElement('div');
+    wrap.style.display='flex';
+    wrap.style.alignItems='center';
+    wrap.style.gap='7px';
+    wrap.style.marginBottom='11px';
+    compilerLabel.parentNode.insertBefore(wrap,compilerLabel);
+    wrap.appendChild(compilerLabel);
+    compilerLabel.style.margin='0';
+    compilerFlag=document.createElement('span');
+    compilerFlag.id='compilerFlag';
+    compilerFlag.style.fontSize='20px';
+    compilerFlag.style.lineHeight='1';
+    compilerFlag.setAttribute('aria-label','Output language');
+    wrap.appendChild(compilerFlag);
+  }
   function updateCompilerFlag(){
-    if(!compilerLabel)return;
-    const clean=compilerLabel.textContent.replace(/\s+(🇲🇽|🇬🇧|🇫🇷|🇮🇹|🇩🇪|🇯🇵|🇨🇳|🇮🇱|🇦🇪|🇷🇺|🇰🇷)$/u,'');
-    compilerLabel.textContent=`${clean||outputLabelBase} ${FLAGS[effectiveOutputLang()]||''}`.trim();
+    if(compilerFlag) compilerFlag.textContent=FLAGS[effectiveOutputLang()]||'';
+  }
+  function setSelectedOutput(lang){
+    selectedOutputLang=lang||null;
+    if(selectedOutputLang)localStorage.setItem('af_output_lang',selectedOutputLang);
+    else localStorage.removeItem('af_output_lang');
+    try{if(typeof outLang!=='undefined')outLang=selectedOutputLang}catch(_){}
+    updateCompilerFlag();
   }
 
-  // Capture output-language clicks directly from the flag container. This avoids
-  // relying on the older inline setOut() state, which could remain stuck on a prior language.
   document.addEventListener('click',e=>{
     const btn=e.target.closest('#outFlags button,#outFlags .flag');
     if(!btn)return;

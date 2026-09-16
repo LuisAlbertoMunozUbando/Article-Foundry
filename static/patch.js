@@ -20,7 +20,18 @@
     const paper = document.getElementById('paper');
     const iframe = paper?.querySelector('iframe');
     if (iframe) {
-      // The artifact endpoint is inline. This iframe only displays the PDF.
+      // The generated PDF filename can be identical on repeated compiles during the
+      // same day. Force a new URL so the browser/PDF viewer cannot reuse stale bytes.
+      const raw = iframe.getAttribute('src') || iframe.src || '';
+      if (raw) {
+        try {
+          const u = new URL(raw, window.location.origin);
+          u.searchParams.set('_afrev', Date.now().toString());
+          iframe.src = u.pathname + u.search + u.hash;
+        } catch (_) {
+          iframe.src = raw + (raw.includes('?') ? '&' : '?') + '_afrev=' + Date.now();
+        }
+      }
       iframe.setAttribute('title', 'PDF preview');
       iframe.style.width = '100%';
       iframe.style.height = '760px';

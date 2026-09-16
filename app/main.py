@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -19,7 +19,7 @@ DB.parent.mkdir(parents=True,exist_ok=True); ART.mkdir(parents=True,exist_ok=Tru
 
 LANGUAGES={'es':'Spanish','en':'English','fr':'French','it':'Italian','de':'German','ja':'Japanese','zh':'Mandarin Chinese','he':'Hebrew','ar':'Arabic','ru':'Russian','ko':'Korean'}
 NON_LATIN={'ja','zh','he','ar','ru','ko'}
-app=FastAPI(title='Article Foundry',version='0.3.0')
+app=FastAPI(title='Article Foundry',version='0.3.1')
 
 def conn():
  c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
@@ -88,17 +88,13 @@ async def llm_json(text,user_keywords,language):
 
 async def compose_document(mode,title,frags,language):
  lang=LANGUAGES.get(language,'Spanish'); corpus='\n\n'.join(f"FRAGMENT {i+1}: {f['text']}" for i,f in enumerate(frags)) or 'No content yet.'
- structures={
-  'divulgacion':'popular-science article: engaging opening, central idea, explanation, evidence/connections, implications, conclusion',
-  'ieee':'IEEE-style scientific paper: abstract, introduction, related work/context, methodology or approach when supported, results/evidence when supported, discussion, conclusion',
-  'patent':'patent-oriented technical document: technical field, background, technical problem, summary of invention, detailed description, embodiments, claims draft, abstract'}
+ structures={'divulgacion':'popular-science article: engaging opening, central idea, explanation, evidence/connections, implications, conclusion','ieee':'IEEE-style scientific paper: abstract, introduction, related work/context, methodology or approach when supported, results/evidence when supported, discussion, conclusion','patent':'patent-oriented technical document: technical field, background, technical problem, summary of invention, detailed description, embodiments, claims draft, abstract'}
  prompt=f'''Create a coherent {structures[mode]} using ONLY the supplied fragments as factual content. Do not invent experiments, results, citations, inventors, dates, or claims of novelty not supported by the fragments. Translate or rewrite the supplied material as needed so ALL narrative output is in {lang}. Return ONLY JSON: {{"title":"...","abstract":"...","sections":[{{"heading":"...","body":"..."}}]}}. Keep the requested title semantically unless translation is appropriate. Requested title: {title}\n\n{corpus}'''
  try:return await chat_json('You are a careful multilingual scientific, technical and editorial writer. Output strict JSON only.',prompt,3000)
- except Exception:
-  return {'title':title,'abstract':'','sections':[{'heading':'Content','body':'\n\n'.join(f['text'] for f in frags) or 'Content pending.'}]}
+ except Exception:return {'title':title,'abstract':'','sections':[{'heading':'Content','body':'\n\n'.join(f['text'] for f in frags) or 'Content pending.'}]}
 
 @app.get('/api/health')
-def health():return {'ok':True,'service':'article-foundry','version':'0.3.0','db':str(DB)}
+def health():return {'ok':True,'service':'article-foundry','version':'0.3.1','db':str(DB)}
 
 @app.get('/api/system/llm')
 async def llm_status():
@@ -109,8 +105,7 @@ async def llm_status():
 
 @app.get('/api/projects')
 def list_projects():
- with conn() as c:
-  rows=c.execute('''SELECT p.id,p.title,p.author,p.created,COUNT(DISTINCT f.id) fragment_count,COUNT(DISTINCT s.id) source_count FROM projects p LEFT JOIN fragments f ON f.project_id=p.id LEFT JOIN sources s ON s.project_id=p.id GROUP BY p.id,p.title,p.author,p.created ORDER BY p.created DESC''').fetchall()
+ with conn() as c:rows=c.execute('''SELECT p.id,p.title,p.author,p.created,COUNT(DISTINCT f.id) fragment_count,COUNT(DISTINCT s.id) source_count FROM projects p LEFT JOIN fragments f ON f.project_id=p.id LEFT JOIN sources s ON s.project_id=p.id GROUP BY p.id,p.title,p.author,p.created ORDER BY p.created DESC''').fetchall()
  return [dict(r) for r in rows]
 
 @app.post('/api/projects')
@@ -170,11 +165,8 @@ def delete_source(pid:str,sid:str):
  return {'ok':True}
 
 def latex_document(mode,author,doc,has_sources,language):
- title=tex(doc.get('title') or 'Untitled'); abstract=tex(doc.get('abstract') or ''); sections=doc.get('sections') or []
- unicode_mode=language in NON_LATIN
- if mode=='ieee':
-  pre='\\documentclass[conference]{IEEEtran}\n'
- else:pre='\\documentclass[11pt]{article}\n\\usepackage[margin=1in]{geometry}\n'
+ title=tex(doc.get('title') or 'Untitled'); abstract=tex(doc.get('abstract') or ''); sections=doc.get('sections') or []; unicode_mode=language in NON_LATIN
+ pre='\\documentclass[conference]{IEEEtran}\n' if mode=='ieee' else '\\documentclass[11pt]{article}\n\\usepackage[margin=1in]{geometry}\n'
  if unicode_mode:pre+='\\usepackage{fontspec}\n% Compile this file with XeLaTeX for full Unicode support.\n'
  else:pre+='\\usepackage[utf8]{inputenc}\n\\usepackage[T1]{fontenc}\n'
  pre+='\\usepackage{url}\n'
@@ -193,19 +185,16 @@ async def compile_project(pid:str,req:CompileIn):
   if not p:raise HTTPException(404,'Project not found')
   fs=[dict(x) for x in c.execute('SELECT * FROM fragments WHERE project_id=? ORDER BY created',(pid,))]
   sources=[dict(x) for x in c.execute('SELECT * FROM sources WHERE project_id=? ORDER BY created',(pid,))]
- language=req.output_language or req.interface_language or 'es'; title=req.title or p['title']; author=req.author or p['author']
- doc=await compose_document(req.mode,title,fs,language)
+ language=req.output_language or req.interface_language or 'es'; title=req.title or p['title']; author=req.author or p['author']; doc=await compose_document(req.mode,title,fs,language)
  out=ART/pid; out.mkdir(parents=True,exist_ok=True); stem=f'{req.mode}-{language}-{date.today().isoformat()}'; tp=out/f'{stem}.tex'; bp=out/'references.bib'
  tp.write_text(latex_document(req.mode,author,doc,bool(sources),language),encoding='utf-8'); bp.write_text('\n\n'.join(s['bibtex'] for s in sources),encoding='utf-8')
  pdf=None; engine=(shutil.which('xelatex') if language in NON_LATIN else None) or shutil.which('latexmk') or shutil.which('pdflatex')
  if engine and not (language in NON_LATIN and Path(engine).name not in ('xelatex','latexmk')):
   try:
-   if Path(engine).name=='latexmk':cmd=[engine,'-pdf','-interaction=nonstopmode','-halt-on-error',tp.name]
-   else:cmd=[engine,'-interaction=nonstopmode','-halt-on-error',tp.name]
+   cmd=[engine,'-pdf','-interaction=nonstopmode','-halt-on-error',tp.name] if Path(engine).name=='latexmk' else [engine,'-interaction=nonstopmode','-halt-on-error',tp.name]
    subprocess.run(cmd,cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120,check=False)
    if sources and shutil.which('bibtex'):
-    subprocess.run(['bibtex',stem],cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60,check=False)
-    subprocess.run(cmd,cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120,check=False); subprocess.run(cmd,cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120,check=False)
+    subprocess.run(['bibtex',stem],cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60,check=False); subprocess.run(cmd,cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120,check=False); subprocess.run(cmd,cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120,check=False)
    candidate=out/f'{stem}.pdf'; pdf=candidate.name if candidate.exists() else None
   except Exception:pass
  return {'tex':tp.name,'pdf':pdf,'bib':bp.name,'language':language,'tex_url':f'/api/projects/{pid}/artifacts/{tp.name}','pdf_url':f'/api/projects/{pid}/artifacts/{pdf}' if pdf else None,'bib_url':f'/api/projects/{pid}/artifacts/{bp.name}','latex':tp.read_text(encoding='utf-8'),'bibtex':bp.read_text(encoding='utf-8')}
@@ -216,6 +205,12 @@ def artifact(pid:str,name:str):
  p=ART/pid/name
  if not p.exists():raise HTTPException(404,'Artifact not found')
  media={'pdf':'application/pdf','tex':'application/x-tex','bib':'text/plain'}.get(p.suffix.lower().lstrip('.'),'application/octet-stream')
- return FileResponse(p,media_type=media,filename=p.name)
+ headers={'Content-Disposition':f'inline; filename="{p.name}"'} if p.suffix.lower()=='.pdf' else {}
+ return FileResponse(p,media_type=media,headers=headers)
+
+@app.get('/',response_class=HTMLResponse)
+def index():
+ html=(ROOT/'static/index.html').read_text(encoding='utf-8')
+ return HTMLResponse(html.replace('</body>','<script src="/patch.js?v=031"></script></body>'))
 
 app.mount('/',StaticFiles(directory=ROOT/'static',html=True),name='static')

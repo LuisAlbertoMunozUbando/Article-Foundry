@@ -19,7 +19,7 @@ DB.parent.mkdir(parents=True,exist_ok=True); ART.mkdir(parents=True,exist_ok=Tru
 
 LANGUAGES={'es':'Spanish','en':'English','fr':'French','it':'Italian','de':'German','ja':'Japanese','zh':'Mandarin Chinese','he':'Hebrew','ar':'Arabic','ru':'Russian','ko':'Korean'}
 NON_LATIN={'ja','zh','he','ar','ru','ko'}
-app=FastAPI(title='Article Foundry',version='0.3.1')
+app=FastAPI(title='Article Foundry',version='0.3.2')
 
 def conn():
  c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
@@ -50,6 +50,20 @@ def tex(s:str)->str:
  s=str(s or '')
  for a,b in [('\\','\\textbackslash{}'),('&','\\&'),('%','\\%'),('$','\\$'),('#','\\#'),('_','\\_'),('{','\\{'),('}','\\}')]:s=s.replace(a,b)
  return s
+
+def tex_with_citations(s:str,valid_citekeys:set[str]|None=None)->str:
+ """Escape prose while preserving controlled [[CITE:key1,key2]] markers as LaTeX citations."""
+ s=str(s or '')
+ valid=valid_citekeys or set()
+ parts=[]; pos=0
+ for m in re.finditer(r'\[\[CITE:([^\]]+)\]\]',s,flags=re.I):
+  parts.append(tex(s[pos:m.start()]))
+  requested=[x.strip() for x in m.group(1).split(',') if x.strip()]
+  keys=[k for k in requested if k in valid]
+  if keys:parts.append('\\cite{'+','.join(keys)+'}')
+  pos=m.end()
+ parts.append(tex(s[pos:]))
+ return ''.join(parts)
 
 def bib_escape(s:str)->str:return str(s).replace('\\','\\textbackslash{}').replace('{','\\{').replace('}','\\}')
 
@@ -86,15 +100,54 @@ async def llm_json(text,user_keywords,language):
  except Exception:
   ks=user_keywords or fallback_keywords(text); return {'summary':text[:280],'kind':'idea','keywords':ks,'concepts':ks[:5],'relationships':[]}
 
-async def compose_document(mode,title,frags,language):
- lang=LANGUAGES.get(language,'Spanish'); corpus='\n\n'.join(f"FRAGMENT {i+1}: {f['text']}" for i,f in enumerate(frags)) or 'No content yet.'
+def ensure_document_citations(doc:dict,sources:list[dict])->dict:
+ """Guarantee at least one citation marker when sources exist, even if the model omitted markers."""
+ if not sources:return doc
+ serialized=json.dumps(doc,ensure_ascii=False)
+ if '[[CITE:' in serialized.upper():return doc
+ keys=[s.get('citekey') for s in sources if s.get('citekey')]
+ if not keys:return doc
+ sections=doc.get('sections') or []
+ marker='[[CITE:'+','.join(keys)+']]'
+ if sections:
+  sections[0]['body']=str(sections[0].get('body','')).rstrip()+' '+marker
+ else:
+  doc['sections']=[{'heading':'Sources','body':marker}]
+ return doc
+
+async def compose_document(mode,title,frags,sources,language):
+ lang=LANGUAGES.get(language,'Spanish')
+ by_fragment={}
+ for s in sources:
+  if s.get('fragment_id'):by_fragment.setdefault(s['fragment_id'],[]).append(s['citekey'])
+ corpus_parts=[]
+ for i,f in enumerate(frags):
+  keys=by_fragment.get(f.get('id'),[])
+  citation_line=('\nCITATION_KEYS: '+', '.join(keys)) if keys else '\nCITATION_KEYS: none'
+  corpus_parts.append(f"FRAGMENT {i+1}:\n{f['text']}{citation_line}")
+ unlinked=[s for s in sources if not s.get('fragment_id')]
+ if unlinked:
+  corpus_parts.append('PROJECT SOURCES NOT LINKED TO A SPECIFIC FRAGMENT:\n'+'\n'.join(f"{s['citekey']}: {s['raw']}" for s in unlinked))
+ corpus='\n\n'.join(corpus_parts) or 'No content yet.'
  structures={'divulgacion':'popular-science article: engaging opening, central idea, explanation, evidence/connections, implications, conclusion','ieee':'IEEE-style scientific paper: abstract, introduction, related work/context, methodology or approach when supported, results/evidence when supported, discussion, conclusion','patent':'patent-oriented technical document: technical field, background, technical problem, summary of invention, detailed description, embodiments, claims draft, abstract'}
- prompt=f'''Create a coherent {structures[mode]} using ONLY the supplied fragments as factual content. Do not invent experiments, results, citations, inventors, dates, or claims of novelty not supported by the fragments. Translate or rewrite the supplied material as needed so ALL narrative output is in {lang}. Return ONLY JSON: {{"title":"...","abstract":"...","sections":[{{"heading":"...","body":"..."}}]}}. Keep the requested title semantically unless translation is appropriate. Requested title: {title}\n\n{corpus}'''
- try:return await chat_json('You are a careful multilingual scientific, technical and editorial writer. Output strict JSON only.',prompt,3000)
- except Exception:return {'title':title,'abstract':'','sections':[{'heading':'Content','body':'\n\n'.join(f['text'] for f in frags) or 'Content pending.'}]}
+ prompt=f'''Create a coherent {structures[mode]} using ONLY the supplied fragments as factual content. Do not invent experiments, results, citations, inventors, dates, or claims of novelty not supported by the fragments. Translate or rewrite the supplied material as needed so ALL narrative output is in {lang}.
+
+CITATION RULES:
+- When a statement is supported by a fragment that has CITATION_KEYS, place a citation marker immediately after that statement using EXACTLY this syntax: [[CITE:key]] or [[CITE:key1,key2]].
+- Use ONLY citation keys explicitly supplied below. Never invent a key.
+- Prefer citations near the claims they support, not as a detached list at the end.
+- Sources not linked to a fragment may be cited only when their provided description directly supports the statement.
+
+Return ONLY JSON: {{"title":"...","abstract":"...","sections":[{{"heading":"...","body":"..."}}]}}. Keep the requested title semantically unless translation is appropriate. Requested title: {title}\n\n{corpus}'''
+ try:
+  doc=await chat_json('You are a careful multilingual scientific, technical and editorial writer. Output strict JSON only and preserve requested [[CITE:...]] markers.',prompt,3200)
+ except Exception:
+  body='\n\n'.join(f['text'] for f in frags) or 'Content pending.'
+  doc={'title':title,'abstract':'','sections':[{'heading':'Content','body':body}]}
+ return ensure_document_citations(doc,sources)
 
 @app.get('/api/health')
-def health():return {'ok':True,'service':'article-foundry','version':'0.3.1','db':str(DB)}
+def health():return {'ok':True,'service':'article-foundry','version':'0.3.2','db':str(DB)}
 
 @app.get('/api/system/llm')
 async def llm_status():
@@ -164,8 +217,9 @@ def delete_source(pid:str,sid:str):
   if r.rowcount==0:raise HTTPException(404,'Source not found')
  return {'ok':True}
 
-def latex_document(mode,author,doc,has_sources,language):
- title=tex(doc.get('title') or 'Untitled'); abstract=tex(doc.get('abstract') or ''); sections=doc.get('sections') or []; unicode_mode=language in NON_LATIN
+def latex_document(mode,author,doc,has_sources,language,citekeys):
+ valid=set(citekeys)
+ title=tex(doc.get('title') or 'Untitled'); abstract=tex_with_citations(doc.get('abstract') or '',valid); sections=doc.get('sections') or []; unicode_mode=language in NON_LATIN
  pre='\\documentclass[conference]{IEEEtran}\n' if mode=='ieee' else '\\documentclass[11pt]{article}\n\\usepackage[margin=1in]{geometry}\n'
  if unicode_mode:pre+='\\usepackage{fontspec}\n% Compile this file with XeLaTeX for full Unicode support.\n'
  else:pre+='\\usepackage[utf8]{inputenc}\n\\usepackage[T1]{fontenc}\n'
@@ -174,7 +228,7 @@ def latex_document(mode,author,doc,has_sources,language):
  else:pre+=f'\\title{{{title}}}\n\\author{{{tex(author)}}}\n\\date{{{date.today().isoformat()}}}\n'
  body='\\begin{document}\n\\maketitle\n'
  if abstract:body+=f'\\begin{{abstract}}\n{abstract}\n\\end{{abstract}}\n'
- for s in sections:body+=f"\\section{{{tex(s.get('heading',''))}}}\n{tex(s.get('body',''))}\n"
+ for s in sections:body+=f"\\section{{{tex(s.get('heading',''))}}}\n{tex_with_citations(s.get('body',''),valid)}\n"
  if has_sources:body+='\\nocite{*}\n\\bibliographystyle{IEEEtran}\n\\bibliography{references}\n'
  return pre+body+'\\end{document}\n'
 
@@ -185,9 +239,10 @@ async def compile_project(pid:str,req:CompileIn):
   if not p:raise HTTPException(404,'Project not found')
   fs=[dict(x) for x in c.execute('SELECT * FROM fragments WHERE project_id=? ORDER BY created',(pid,))]
   sources=[dict(x) for x in c.execute('SELECT * FROM sources WHERE project_id=? ORDER BY created',(pid,))]
- language=req.output_language or req.interface_language or 'es'; title=req.title or p['title']; author=req.author or p['author']; doc=await compose_document(req.mode,title,fs,language)
+ language=req.output_language or req.interface_language or 'es'; title=req.title or p['title']; author=req.author or p['author']; doc=await compose_document(req.mode,title,fs,sources,language)
  out=ART/pid; out.mkdir(parents=True,exist_ok=True); stem=f'{req.mode}-{language}-{date.today().isoformat()}'; tp=out/f'{stem}.tex'; bp=out/'references.bib'
- tp.write_text(latex_document(req.mode,author,doc,bool(sources),language),encoding='utf-8'); bp.write_text('\n\n'.join(s['bibtex'] for s in sources),encoding='utf-8')
+ citekeys=[s['citekey'] for s in sources if s.get('citekey')]
+ tp.write_text(latex_document(req.mode,author,doc,bool(sources),language,citekeys),encoding='utf-8'); bp.write_text('\n\n'.join(s['bibtex'] for s in sources),encoding='utf-8')
  pdf=None; engine=(shutil.which('xelatex') if language in NON_LATIN else None) or shutil.which('latexmk') or shutil.which('pdflatex')
  if engine and not (language in NON_LATIN and Path(engine).name not in ('xelatex','latexmk')):
   try:
@@ -197,7 +252,8 @@ async def compile_project(pid:str,req:CompileIn):
     subprocess.run(['bibtex',stem],cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60,check=False); subprocess.run(cmd,cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120,check=False); subprocess.run(cmd,cwd=out,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120,check=False)
    candidate=out/f'{stem}.pdf'; pdf=candidate.name if candidate.exists() else None
   except Exception:pass
- return {'tex':tp.name,'pdf':pdf,'bib':bp.name,'language':language,'tex_url':f'/api/projects/{pid}/artifacts/{tp.name}','pdf_url':f'/api/projects/{pid}/artifacts/{pdf}' if pdf else None,'bib_url':f'/api/projects/{pid}/artifacts/{bp.name}','latex':tp.read_text(encoding='utf-8'),'bibtex':bp.read_text(encoding='utf-8')}
+ revision=str(int(datetime.now().timestamp()*1000))
+ return {'tex':tp.name,'pdf':pdf,'bib':bp.name,'language':language,'revision':revision,'tex_url':f'/api/projects/{pid}/artifacts/{tp.name}','pdf_url':f'/api/projects/{pid}/artifacts/{pdf}' if pdf else None,'bib_url':f'/api/projects/{pid}/artifacts/{bp.name}','latex':tp.read_text(encoding='utf-8'),'bibtex':bp.read_text(encoding='utf-8')}
 
 @app.get('/api/projects/{pid}/artifacts/{name}')
 def artifact(pid:str,name:str):
@@ -205,12 +261,13 @@ def artifact(pid:str,name:str):
  p=ART/pid/name
  if not p.exists():raise HTTPException(404,'Artifact not found')
  media={'pdf':'application/pdf','tex':'application/x-tex','bib':'text/plain'}.get(p.suffix.lower().lstrip('.'),'application/octet-stream')
- headers={'Content-Disposition':f'inline; filename="{p.name}"'} if p.suffix.lower()=='.pdf' else {}
+ headers={'Cache-Control':'no-store, no-cache, must-revalidate, max-age=0','Pragma':'no-cache','Expires':'0'}
+ if p.suffix.lower()=='.pdf':headers['Content-Disposition']=f'inline; filename="{p.name}"'
  return FileResponse(p,media_type=media,headers=headers)
 
 @app.get('/',response_class=HTMLResponse)
 def index():
  html=(ROOT/'static/index.html').read_text(encoding='utf-8')
- return HTMLResponse(html.replace('</body>','<script src="/patch.js?v=031"></script></body>'))
+ return HTMLResponse(html.replace('</body>','<script src="/patch.js?v=032"></script></body>'),headers={'Cache-Control':'no-cache'})
 
 app.mount('/',StaticFiles(directory=ROOT/'static',html=True),name='static')

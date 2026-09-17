@@ -2,7 +2,12 @@
 (() => {
   const FLAGS = {es:'🇲🇽',en:'🇬🇧',fr:'🇫🇷',it:'🇮🇹',de:'🇩🇪',ja:'🇯🇵',zh:'🇨🇳',he:'🇮🇱',ar:'🇦🇪',ru:'🇷🇺',ko:'🇰🇷'};
   const NON_LATIN = new Set(['ja','zh','he','ar','ru','ko']);
-  let selectedOutputLang = localStorage.getItem('af_output_lang') || null;
+
+  // IMPORTANT: no persistent alternative output language.
+  // By default, output follows the interface language. An alternative language
+  // applies only after the user explicitly clicks an output flag in this session.
+  localStorage.removeItem('af_output_lang');
+  let selectedOutputLang = null;
 
   function activeProjectId(){
     for(const b of Array.from(document.querySelectorAll('#projectTabs .ptab.active'))){
@@ -11,14 +16,16 @@
     }
     try{return project||null}catch(_){return null}
   }
+
   function effectiveUILang(){
     try{if(uiLang)return uiLang}catch(_){}
     return localStorage.getItem('af_ui')||document.documentElement.lang||'es';
   }
-  function effectiveOutputLang(){return selectedOutputLang||effectiveUILang()}
 
-  // Keep the flag OUTSIDE #compilerLabel. applyLang() rewrites compilerLabel.textContent,
-  // so an embedded flag was being erased every time the UI language refreshed.
+  function effectiveOutputLang(){
+    return selectedOutputLang || effectiveUILang();
+  }
+
   const compilerLabel=document.getElementById('compilerLabel');
   let compilerFlag=document.getElementById('compilerFlag');
   if(compilerLabel && !compilerFlag){
@@ -37,17 +44,18 @@
     compilerFlag.setAttribute('aria-label','Output language');
     wrap.appendChild(compilerFlag);
   }
+
   function updateCompilerFlag(){
     if(compilerFlag) compilerFlag.textContent=FLAGS[effectiveOutputLang()]||'';
   }
+
   function setSelectedOutput(lang){
     selectedOutputLang=lang||null;
-    if(selectedOutputLang)localStorage.setItem('af_output_lang',selectedOutputLang);
-    else localStorage.removeItem('af_output_lang');
     try{if(typeof outLang!=='undefined')outLang=selectedOutputLang}catch(_){}
     updateCompilerFlag();
   }
 
+  // Alternative-output flags only affect the current page/session.
   document.addEventListener('click',e=>{
     const btn=e.target.closest('#outFlags button,#outFlags .flag');
     if(!btn)return;
@@ -68,10 +76,26 @@
       return r;
     };
   }
+
   const oldSetUI=window.setUI;
-  if(typeof oldSetUI==='function')window.setUI=function(){const r=oldSetUI.apply(this,arguments);setTimeout(updateCompilerFlag,0);return r;};
+  if(typeof oldSetUI==='function'){
+    window.setUI=function(lang){
+      const r=oldSetUI.apply(this,arguments);
+      // If no alternative language has been selected, changing the interface
+      // changes the output language too.
+      setTimeout(updateCompilerFlag,0);
+      return r;
+    };
+  }
+
   const oldApplyLang=window.applyLang;
-  if(typeof oldApplyLang==='function')window.applyLang=function(){const r=oldApplyLang.apply(this,arguments);setTimeout(updateCompilerFlag,0);return r;};
+  if(typeof oldApplyLang==='function'){
+    window.applyLang=function(){
+      const r=oldApplyLang.apply(this,arguments);
+      setTimeout(updateCompilerFlag,0);
+      return r;
+    };
+  }
 
   const oldAddFragment=window.addFragment;
   window.addFragment=async function(){
@@ -127,7 +151,6 @@
         if(paper)paper.innerHTML='<div class="by" style="padding-top:70px">No PDF was produced. LaTeX is available.</div>';
         if(status)status.textContent=NON_LATIN.has(lang)?`✓ LaTeX generado ${FLAGS[lang]} · PDF requiere XeLaTeX.`:'LaTeX generado, pero la compilación PDF falló.';
       }
-      setSelectedOutput(x.language||lang);
       return x;
     }catch(e){
       if(paper)paper.innerHTML='<div class="by" style="padding-top:70px">Compilation failed.</div>';

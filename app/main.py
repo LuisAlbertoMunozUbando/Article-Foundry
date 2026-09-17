@@ -19,7 +19,7 @@ DB.parent.mkdir(parents=True,exist_ok=True); ART.mkdir(parents=True,exist_ok=Tru
 
 LANGUAGES={'es':'Spanish','en':'English','fr':'French','it':'Italian','de':'German','ja':'Japanese','zh':'Mandarin Chinese','he':'Hebrew','ar':'Arabic','ru':'Russian','ko':'Korean'}
 NON_LATIN={'ja','zh','he','ar','ru','ko'}
-app=FastAPI(title='Article Foundry',version='0.3.2')
+app=FastAPI(title='Article Foundry',version='0.3.3')
 
 def conn():
  c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
@@ -52,7 +52,6 @@ def tex(s:str)->str:
  return s
 
 def tex_with_citations(s:str,valid_citekeys:set[str]|None=None)->str:
- """Escape prose while preserving controlled [[CITE:key1,key2]] markers as LaTeX citations."""
  s=str(s or '')
  valid=valid_citekeys or set()
  parts=[]; pos=0
@@ -85,13 +84,29 @@ def normalize_source(raw:str):
   key='web_'+sid; return 'url',key,f'@misc{{{key},\n  title={{{bib_escape(s)}}},\n  url={{{s}}},\n  note={{Accessed {now}}}\n}}'
  key='ref_'+sid; return 'citation',key,f'@misc{{{key},\n  title={{{bib_escape(s[:180])}}},\n  note={{{bib_escape(s)}}}\n}}'
 
+async def _model_name(h,headers):
+ if MODEL:return MODEL
+ r=await h.get(f'{LLM}/models',headers=headers); r.raise_for_status(); return r.json()['data'][0]['id']
+
 async def chat_json(system:str,user:str,max_tokens=1200):
- model=MODEL; headers={'Authorization':f'Bearer {KEY}'}
+ headers={'Authorization':f'Bearer {KEY}'}
  async with httpx.AsyncClient(timeout=120) as h:
-  if not model:
-   r=await h.get(f'{LLM}/models',headers=headers); r.raise_for_status(); model=r.json()['data'][0]['id']
-  r=await h.post(f'{LLM}/chat/completions',headers=headers,json={'model':model,'messages':[{'role':'system','content':system},{'role':'user','content':user}],'temperature':0.15,'max_tokens':max_tokens}); r.raise_for_status()
-  raw=r.json()['choices'][0]['message']['content'].strip(); raw=re.sub(r'^```json\s*|\s*```$','',raw,flags=re.I|re.S).strip(); return json.loads(raw)
+  model=await _model_name(h,headers)
+  r=await h.post(f'{LLM}/chat/completions',headers=headers,json={'model':model,'messages':[{'role':'system','content':system},{'role':'user','content':user}],'temperature':0.1,'max_tokens':max_tokens}); r.raise_for_status()
+  raw=r.json()['choices'][0]['message']['content'].strip()
+ raw=re.sub(r'^```(?:json)?\s*|\s*```$','',raw,flags=re.I|re.S).strip()
+ try:return json.loads(raw)
+ except Exception:
+  a=raw.find('{'); b=raw.rfind('}')
+  if a>=0 and b>a:return json.loads(raw[a:b+1])
+  raise
+
+async def chat_text(system:str,user:str,max_tokens=3200):
+ headers={'Authorization':f'Bearer {KEY}'}
+ async with httpx.AsyncClient(timeout=120) as h:
+  model=await _model_name(h,headers)
+  r=await h.post(f'{LLM}/chat/completions',headers=headers,json={'model':model,'messages':[{'role':'system','content':system},{'role':'user','content':user}],'temperature':0.1,'max_tokens':max_tokens}); r.raise_for_status()
+  return r.json()['choices'][0]['message']['content'].strip()
 
 async def llm_json(text,user_keywords,language):
  lang=LANGUAGES.get(language,'Spanish')
@@ -101,7 +116,6 @@ async def llm_json(text,user_keywords,language):
   ks=user_keywords or fallback_keywords(text); return {'summary':text[:280],'kind':'idea','keywords':ks,'concepts':ks[:5],'relationships':[]}
 
 def ensure_document_citations(doc:dict,sources:list[dict])->dict:
- """Guarantee at least one citation marker when sources exist, even if the model omitted markers."""
  if not sources:return doc
  serialized=json.dumps(doc,ensure_ascii=False)
  if '[[CITE:' in serialized.upper():return doc
@@ -109,10 +123,8 @@ def ensure_document_citations(doc:dict,sources:list[dict])->dict:
  if not keys:return doc
  sections=doc.get('sections') or []
  marker='[[CITE:'+','.join(keys)+']]'
- if sections:
-  sections[0]['body']=str(sections[0].get('body','')).rstrip()+' '+marker
- else:
-  doc['sections']=[{'heading':'Sources','body':marker}]
+ if sections:sections[0]['body']=str(sections[0].get('body','')).rstrip()+' '+marker
+ else:doc['sections']=[{'heading':'Sources','body':marker}]
  return doc
 
 async def compose_document(mode,title,frags,sources,language):
@@ -126,28 +138,34 @@ async def compose_document(mode,title,frags,sources,language):
   citation_line=('\nCITATION_KEYS: '+', '.join(keys)) if keys else '\nCITATION_KEYS: none'
   corpus_parts.append(f"FRAGMENT {i+1}:\n{f['text']}{citation_line}")
  unlinked=[s for s in sources if not s.get('fragment_id')]
- if unlinked:
-  corpus_parts.append('PROJECT SOURCES NOT LINKED TO A SPECIFIC FRAGMENT:\n'+'\n'.join(f"{s['citekey']}: {s['raw']}" for s in unlinked))
+ if unlinked:corpus_parts.append('PROJECT SOURCES NOT LINKED TO A SPECIFIC FRAGMENT:\n'+'\n'.join(f"{s['citekey']}: {s['raw']}" for s in unlinked))
  corpus='\n\n'.join(corpus_parts) or 'No content yet.'
  structures={'divulgacion':'popular-science article: engaging opening, central idea, explanation, evidence/connections, implications, conclusion','ieee':'IEEE-style scientific paper: abstract, introduction, related work/context, methodology or approach when supported, results/evidence when supported, discussion, conclusion','patent':'patent-oriented technical document: technical field, background, technical problem, summary of invention, detailed description, embodiments, claims draft, abstract'}
- prompt=f'''Create a coherent {structures[mode]} using ONLY the supplied fragments as factual content. Do not invent experiments, results, citations, inventors, dates, or claims of novelty not supported by the fragments. Translate or rewrite the supplied material as needed so ALL narrative output is in {lang}.
+ prompt=f'''MANDATORY OUTPUT LANGUAGE: {lang}.
+Every title, heading, abstract sentence, and body sentence MUST be written in {lang}. The source fragments may be in any language: translate them when needed. Do not keep English prose when {lang} is requested, except proper nouns, code, equations, technical identifiers, and citation keys.
+
+Create a coherent {structures[mode]} using ONLY the supplied fragments as factual content. Do not invent experiments, results, citations, inventors, dates, or claims of novelty not supported by the fragments.
 
 CITATION RULES:
-- When a statement is supported by a fragment that has CITATION_KEYS, place a citation marker immediately after that statement using EXACTLY this syntax: [[CITE:key]] or [[CITE:key1,key2]].
+- When a statement is supported by a fragment that has CITATION_KEYS, place [[CITE:key]] or [[CITE:key1,key2]] immediately after that statement.
 - Use ONLY citation keys explicitly supplied below. Never invent a key.
-- Prefer citations near the claims they support, not as a detached list at the end.
-- Sources not linked to a fragment may be cited only when their provided description directly supports the statement.
+- Prefer citations near the claims they support.
 
-Return ONLY JSON: {{"title":"...","abstract":"...","sections":[{{"heading":"...","body":"..."}}]}}. Keep the requested title semantically unless translation is appropriate. Requested title: {title}\n\n{corpus}'''
+Return ONLY valid JSON: {{"title":"...","abstract":"...","sections":[{{"heading":"...","body":"..."}}]}}.
+Requested title: {title}\n\n{corpus}'''
  try:
-  doc=await chat_json('You are a careful multilingual scientific, technical and editorial writer. Output strict JSON only and preserve requested [[CITE:...]] markers.',prompt,3200)
+  doc=await chat_json(f'You are a multilingual scientific and technical writer. The mandatory output language is {lang}. Output strict JSON only.',prompt,3200)
  except Exception:
-  body='\n\n'.join(f['text'] for f in frags) or 'Content pending.'
-  doc={'title':title,'abstract':'','sections':[{'heading':'Content','body':body}]}
+  # Important: never silently copy the source language as a fallback.
+  # If structured JSON fails, explicitly translate/rewrite into the requested language.
+  fallback=f'''Rewrite the following material as a coherent {structures[mode]} entirely in {lang}. Translate all narrative prose into {lang}. Preserve proper nouns, equations, technical identifiers and [[CITE:...]] markers. Do not add facts. Output body text only.\n\n{corpus}'''
+  body=await chat_text(f'You are a precise translator and technical editor. Write only in {lang}.',fallback,3200)
+  heading={'es':'Contenido','en':'Content','fr':'Contenu','it':'Contenuto','de':'Inhalt','ja':'内容','zh':'内容','he':'תוכן','ar':'المحتوى','ru':'Содержание','ko':'내용'}.get(language,'Content')
+  doc={'title':title,'abstract':'','sections':[{'heading':heading,'body':body}]}
  return ensure_document_citations(doc,sources)
 
 @app.get('/api/health')
-def health():return {'ok':True,'service':'article-foundry','version':'0.3.2','db':str(DB)}
+def health():return {'ok':True,'service':'article-foundry','version':'0.3.3','db':str(DB)}
 
 @app.get('/api/system/llm')
 async def llm_status():
@@ -268,6 +286,6 @@ def artifact(pid:str,name:str):
 @app.get('/',response_class=HTMLResponse)
 def index():
  html=(ROOT/'static/index.html').read_text(encoding='utf-8')
- return HTMLResponse(html.replace('</body>','<script src="/patch.js?v=032"></script></body>'),headers={'Cache-Control':'no-cache'})
+ return HTMLResponse(html.replace('</body>','<script src="/patch.js?v=041"></script></body>'),headers={'Cache-Control':'no-cache'})
 
 app.mount('/',StaticFiles(directory=ROOT/'static',html=True),name='static')
